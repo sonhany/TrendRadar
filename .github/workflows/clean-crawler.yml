@@ -1,14 +1,13 @@
 name: Check In
 
-# ✅ 签到续期：运行此 workflow 可重置 7 天计时，保持 "Get Hot News" 正常运行
-# ✅ Renewal: Run this workflow to reset the 7-day timer and keep "Get Hot News" active
-#
-# 📌 操作方法 / How to use:
-#   1. 点击 "Run workflow" 按钮 / Click "Run workflow" button
-#   2. 每 7 天内至少运行一次 / Run at least once every 7 days
+# 签到续期：重置 7 天计时，保持 "Get Hot News" 正常运行
+# 原设计为手动运行，这里追加每 5 天自动运行一次（schedule），手动触发保留
 
 on:
   workflow_dispatch:
+  schedule:
+    # 每 5 天 UTC 01:23 运行一次（北京时间 09:23）
+    - cron: "23 1 */5 * *"
 
 jobs:
   del_runs:
