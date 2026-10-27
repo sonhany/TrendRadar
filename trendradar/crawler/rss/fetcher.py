@@ -84,48 +84,6 @@ class RSSFetcher:
 
         return session
 
-    def _filter_by_freshness(
-        self,
-        items: List[RSSItem],
-        feed: RSSFeedConfig,
-    ) -> Tuple[List[RSSItem], int]:
-        """
-        根据新鲜度过滤文章
-
-        Args:
-            items: 待过滤的文章列表
-            feed: RSS 源配置
-
-        Returns:
-            (过滤后的文章列表, 被过滤的文章数)
-        """
-        # 如果全局禁用，直接返回
-        if not self.freshness_enabled:
-            return items, 0
-
-        # 确定此 feed 的 max_age_days
-        max_days = feed.max_age_days
-        if max_days is None:
-            max_days = self.default_max_age_days
-
-        # 如果设为 0，禁用此 feed 的过滤
-        if max_days == 0:
-            return items, 0
-
-        # 过滤逻辑：无发布时间的文章保留
-        filtered = []
-        for item in items:
-            if not item.published_at:
-                # 无发布时间，保留
-                filtered.append(item)
-            elif is_within_days(item.published_at, max_days, self.timezone):
-                # 在指定天数内，保留
-                filtered.append(item)
-            # 否则过滤掉
-
-        filtered_count = len(items) - len(filtered)
-        return filtered, filtered_count
-
     def fetch_feed(self, feed: RSSFeedConfig) -> Tuple[List[RSSItem], Optional[str]]:
         """
         抓取单个 RSS 源
@@ -137,8 +95,28 @@ class RSSFetcher:
             (条目列表, 错误信息) 元组
         """
         try:
-            response = self.session.get(feed.url, timeout=self.timeout)
-            response.raise_for_status()
+            # 瞬时请求故障只额外尝试一次，不增加等待。
+            for attempt in range(2):
+                try:
+                    response = self.session.get(feed.url, timeout=self.timeout)
+                    response.raise_for_status()
+                    break
+                except requests.RequestException as e:
+                    error_response = e.response
+                    retryable = isinstance(e, (requests.Timeout, requests.ConnectionError)) and not isinstance(
+                        e, requests.exceptions.SSLError
+                    )
+                    if isinstance(e, requests.HTTPError):
+                        retryable = error_response is not None and error_response.status_code in {
+                            408, 500, 502, 503, 504
+                        }
+                    # 不提前重试带服务端等待指令的失败响应。
+                    if (
+                        not retryable
+                        or attempt == 1
+                        or (error_response is not None and "Retry-After" in error_response.headers)
+                    ):
+                        raise
 
             parsed_items = self.parser.parse(response.text, feed.url)
 
@@ -157,6 +135,7 @@ class RSSFetcher:
                     feed_id=feed.id,
                     feed_name=feed.name,
                     url=parsed.url,
+                    guid=parsed.guid or "",
                     published_at=parsed.published_at or "",
                     summary=parsed.summary or "",
                     author=parsed.author or "",
