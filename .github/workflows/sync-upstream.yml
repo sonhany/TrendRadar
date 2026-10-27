@@ -1,0 +1,93 @@
+name: Sync upstream TrendRadar
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout user repository
+        uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 1
+
+      - name: Download upstream source
+        run: |
+          mkdir -p /tmp/trendradar-upstream
+          curl -fsSL https://codeload.github.com/sansan0/TrendRadar/tar.gz/refs/heads/master \
+            | tar -xz --strip-components=1 -C /tmp/trendradar-upstream
+
+      - name: Sync upstream while keeping personal configuration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          import subprocess
+
+          source = Path('/tmp/trendradar-upstream')
+          target = Path('.')
+          keep = {
+              'config/config.yaml',
+              'config/timeline.yaml',
+              'config/frequency_words.txt',
+              'config/ai_interests.txt',
+              'config/ai_analysis_prompt.txt',
+              'config/ai_translation_prompt.txt',
+              'config/ai_filter/prompt.txt',
+              'config/ai_filter/extract_prompt.txt',
+              'config/ai_filter/update_tags_prompt.txt',
+              'requirements.txt',
+              'readme.md',
+              '.github/workflows/crawler.yml',
+              '.github/workflows/clean-crawler.yml',
+              '.github/workflows/sync-upstream.yml',
+          }
+          upstream_files = {p.relative_to(source).as_posix() for p in source.rglob('*') if p.is_file()}
+          tracked = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          for rel in tracked:
+              if rel and rel not in keep and rel not in upstream_files:
+                  path = target / rel
+                  if path.is_file():
+                      path.unlink()
+          for path in source.rglob('*'):
+              if not path.is_file():
+                  continue
+              rel = path.relative_to(source).as_posix()
+              if rel in keep or rel.startswith('.git/'):
+                  continue
+              dest = target / rel
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(path, dest)
+
+          version = (source / 'version').read_text(encoding='utf-8').strip()
+          (target / 'version').write_text(version + '\n', encoding='utf-8')
+          readme = target / 'README.md'
+          if readme.exists():
+              shutil.copy2(readme, target / 'readme.md')
+          print(f'Synced upstream TrendRadar {version}; kept personal config and deployment workflows.')
+          PY
+
+      - name: Verify version and deployment hooks
+        run: |
+          VERSION="$(tr -d '\r\n' < version)"
+          grep -q "version = \"${VERSION}\"" pyproject.toml
+          grep -q 'Deploy report page to Vercel' .github/workflows/crawler.yml
+          grep -q 'DINGTALK_WEBHOOK_URL' .github/workflows/crawler.yml
+          grep -q 'AI_API_KEY' .github/workflows/crawler.yml
+          test -s readme.md
+          python -m compileall -q trendradar mcp_server
+
+      - name: Commit upstream update
+        run: |
+          VERSION="$(tr -d '\r\n' < version)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "chore: sync upstream TrendRadar v${VERSION}"
+          git push origin master
